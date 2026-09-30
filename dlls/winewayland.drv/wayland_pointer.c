@@ -890,11 +890,21 @@ BOOL WAYLAND_ClipCursor(const RECT *clip, BOOL reset)
     struct wayland_win_data *data;
     BOOL covers_vscreen = FALSE;
     RECT confine_rect;
+    HWND hwnd = NtUserGetForegroundWindow();
 
     TRACE("clip=%s reset=%d\n", wine_dbgstr_rect(clip), reset);
 
-    if (!(data = wayland_win_data_get(NtUserGetForegroundWindow()))) return FALSE;
-    if ((surface = data->wayland_surface))
+    if (!(data = wayland_win_data_get(hwnd))) return FALSE;
+    /* The virtual desktop's own surface covers the whole screen, and until a cursor has been
+     * set for it (it starts with none) the "fullscreen window with a hidden cursor" rule below
+     * would lock the pointer to it - which the compositor treats as a game grabbing the mouse:
+     * no cursor, relative motion only, for the whole session. win32u already ignores
+     * ClipCursor while the desktop is foreground, so never constrain the pointer to the
+     * desktop surface; any constraint left on it is dropped. Wine 11 hid this because its
+     * cursor-shape-v1 cursor counts as visible; Wine 10 has no cursor-shape protocol. */
+    if (hwnd == NtUserGetDesktopWindow() && wayland_desktop_mode()) surface = NULL;
+    else surface = data->wayland_surface;
+    if (surface)
     {
         wl_surface = surface->wl_surface;
         if (clip) wayland_surface_calc_confine(surface, clip, &confine_rect);
