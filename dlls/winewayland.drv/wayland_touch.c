@@ -102,6 +102,23 @@ static BOOL touch_screen_coords(HWND hwnd, wl_fixed_t sx, wl_fixed_t sy, POINT *
     return TRUE;
 }
 
+/* wineserver reads a WM_POINTER* lparam as a point normalized to 0..65535 over the virtual screen
+ * (server/queue.c queue_pointer_message), not as pixels - encode it that way or every finger lands
+ * near the top-left corner. Same encoding as upstream winewayland touch. */
+static LPARAM touch_lparam(POINT pos)
+{
+    RECT vscreen = NtUserGetVirtualScreenRect(MDT_RAW_DPI);
+    int width = vscreen.right - vscreen.left, height = vscreen.bottom - vscreen.top;
+    int x, y;
+
+    if (width <= 0 || height <= 0) return 0;
+    x = (int)((long long)pos.x * 65535 / width);
+    y = (int)((long long)pos.y * 65535 / height);
+    x = max(0, min(x, 65535));
+    y = max(0, min(y, 65535));
+    return MAKELPARAM(x, y);
+}
+
 /* One finger to Windows as a WM_POINTER* message, the same shape winex11.drv builds from XInput2
  * raw touch: the id goes in wParamL so a game can tell fingers apart. */
 static void touch_send(HWND hwnd, UINT msg, int32_t id, POINT pos, int extra_flags)
@@ -116,7 +133,7 @@ static void touch_send(HWND hwnd, UINT msg, int32_t id, POINT pos, int extra_fla
     TRACE("hwnd=%p msg=%#x id=%d pos=%dx%d flags=%#x\n", hwnd, msg, id,
           (int)pos.x, (int)pos.y, input.hi.wParamH);
 
-    NtUserSendHardwareInput(hwnd, 0, &input, MAKELPARAM(pos.x, pos.y));
+    NtUserSendHardwareInput(hwnd, 0, &input, touch_lparam(pos));
 }
 
 static void touch_handle_down(void *data, struct wl_touch *wl_touch, uint32_t serial,
