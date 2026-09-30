@@ -2039,8 +2039,11 @@ static struct window_surface *get_window_surface( HWND hwnd, UINT swp_flags, BOO
     if (IsRectEmpty( surface_rect )) needs_surface = FALSE;
     else if (create_layered || is_layered) needs_surface = TRUE;
 
+    /* The driver may keep a window surface for a GL/Vulkan window, when it cannot draw the
+     * window's frame any other way (winewayland on its virtual desktop). */
     if (is_opengl && !is_layered && !create_layered
-        && !(!create_opaque && NtUserGetLayeredWindowAttributes( hwnd, NULL, NULL, &layered_flags ) && layered_flags & LWA_COLORKEY))
+        && !(!create_opaque && NtUserGetLayeredWindowAttributes( hwnd, NULL, NULL, &layered_flags ) && layered_flags & LWA_COLORKEY)
+        && user_driver->pClipClientSurfaces( hwnd ))
     {
         if (new_surface) window_surface_release( new_surface );
         new_surface = NULL;
