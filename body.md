@@ -33,7 +33,7 @@ The layer uses the kernel's `/dev/ntsync` if the device has a usable one, and ot
 | `NTSYNC_SPIN_ITERS=<n>` | spin before sleeping on a wait (default `0`) |
 | `NTSYNC_SWEEP_INTERVAL_SEC=<n>` | how often objects of dead processes are cleaned up (default `30`) |
 
-Limits: 16384 sync objects and 64 objects per wait. Test it per game — it is new, and some games may prefer esync. Userspace ntsync is [`GameNative/ntsync-android`](https://github.com/GameNative/ntsync-android) by **JT (joshuatam)**, pinned at `7ce6435`, LGPL-3.0; its licence ships in each layer under `share/licenses/ntsync-android/`. Not available on the two Wine 10 layers.
+Limits: 16384 sync objects and 64 objects per wait. Test it per game — it is new, and some games may prefer esync. Userspace ntsync is [`GameNative/ntsync-android`](https://github.com/GameNative/ntsync-android) by **[Joshua Tam (@joshuatam)](https://github.com/joshuatam)**, pinned at `7ce6435`, LGPL-3.0; its licence ships in each layer under `share/licenses/ntsync-android/`. Not available on the two Wine 10 layers.
 
 **Scope of the changes versus v8:** `winewayland.drv` (touch; and on Wine 10 the whole Wayland driver plus the `win32u` / `winevulkan` / `ntdll` pieces it needs), `ntdll` and `wineserver` sync (ntsync, Wine 11 only), `rsaenh`, the `lsteamclient` module and its `ntdll` loader gate (Wine 11 arm64ec only), and the per-layer CI checks. No FEX, DXVK, audio or input changes.
 
@@ -354,6 +354,17 @@ Limits: 16384 sync objects and 64 objects per wait. Test it per game — it is n
 > ℹ️ Jumps from v7 straight to v9 (it was left out of v8). No ntsync and no Steam bridge on Wine 10.
 
 </details>
+
+## Credits
+
+- **Userspace ntsync — [Joshua Tam (@joshuatam)](https://github.com/joshuatam), [GameNative](https://github.com/GameNative).** The shared-memory + futex ntsync implementation, [`ntsync-android`](https://github.com/joshuatam/ntsync-android) (LGPL-3.0; GameNative's copy: [`GameNative/ntsync-android`](https://github.com/GameNative/ntsync-android)), pinned in these layers at [`7ce6435`](https://github.com/GameNative/ntsync-android/commit/7ce6435e5979b1cb5341aa4b299f31e8937fe121). Our Wine wiring follows his GameNative Proton 11.0-2 integration, adapted so esync stays the default and ntsync is opt-in:
+  - [`962a379`](https://github.com/GameNative/proton-wine/commit/962a379708a762df79b1aac99f2e0e01a3a53809) — Proton 11.0-2 port with userspace ntsync
+  - [`d67ac1e`](https://github.com/GameNative/proton-wine/commit/d67ac1e0d83c9c6bb6a43bb4dc8459bc45d6b937) — runtime kernel / userspace backend detection
+  - [`0971187`](https://github.com/GameNative/proton-wine/commit/0971187883d7488b1686770015f6e6fd6bf342da) — force-userspace switch
+- **Steam bridge — [Joshua Tam (@joshuatam)](https://github.com/joshuatam), [GameNative](https://github.com/GameNative).** GameNative's lsteamclient integration for their native Android Steam client, [`dafe413`](https://github.com/GameNative/proton-wine/commit/dafe413ae06a11ce0cebea2bc1681b16dbc34c84), is the model for ours; its `owned_dlcs` DLC-ownership override is ported from that commit. The `lsteamclient` module itself is [Valve's](https://github.com/ValveSoftware/Proton) (Proton 11.0-2).
+- **Crypto crash fixes — [bl4ckh4ck5 (@hackoclipse)](https://github.com/hackoclipse).** [`b4fc579`](https://github.com/hackoclipse/proton-wine/commit/b4fc579416adb0a8d343496caf0885e34ed8d8cd) — HMAC with an unsupported inner hash (taken as is; adapted to Wine 10's hashing on the two Proton 10 layers) · [`a0d20d6`](https://github.com/hackoclipse/proton-wine/commit/a0d20d6c2c60bbcaac7a64e374ffe148297ab6f5) — hold the public key during `CPVerifySignature` (our version takes the reference under the handle-table lock and releases only the reference, leaving the caller's handle in place).
+- **Inherited base — [GameNative](https://github.com/GameNative/proton-wine) and Winlator-bionic.** The Android patch set every layer is built on, including the Wine-10 SD-card boot fix; plus [Valve](https://github.com/ValveSoftware/Proton), [GloriousEggroll](https://github.com/GloriousEggroll/proton-ge-custom) (GE game-fix tiers) and [CachyOS](https://github.com/CachyOS/wine-cachyos) for the bases, and Etaash Mathamsetty for upstream `winewayland` touch in the CachyOS layer.
+
 
 ---
 
