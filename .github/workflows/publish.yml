@@ -1,0 +1,85 @@
+name: Publish the versionCode 9 layers
+
+# Server-side attach: every file is pulled from its own CI run artifact on the runner and only
+# attached if its sha256 matches the device-tested file in assets.txt, its profile.json identity is
+# right, and its contents match its kind. Nothing is uploaded from a developer machine. Files
+# already on the release are never replaced.
+on:
+  push:
+    branches: [publish/v9]
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPO: ${{ github.repository }}
+      TAG: build-bionic-layers-20260930-v9
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Fetch and verify every layer
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          grep -v '^#' assets.txt | grep -v '^[[:space:]]*$' | while IFS='|' read -r run artifact file sha vname; do
+            echo "== $file (run $run, artifact $artifact)"
+            rm -rf dl && mkdir dl
+            gh run download "$run" -R "$REPO" -n "$artifact" -D dl
+            test -f "dl/$file"
+            echo "$sha  dl/$file" | sha256sum -c -
+            read -r got_vn got_vc < <(tar -I zstd -xOf "dl/$file" profile.json \
+              | python3 -c 'import json,sys; p=json.load(sys.stdin); print(p["versionName"], p["versionCode"])')
+            [ "$got_vn" = "$vname" ] || { echo "FATAL: versionName $got_vn != $vname"; exit 1; }
+            [ "$got_vc" = "9" ]      || { echo "FATAL: versionCode $got_vc != 9"; exit 1; }
+            # List once into a file, then grep the file (grep -q on a pipe + pipefail = false failure).
+            tar -I zstd -tf "dl/$file" > lst.txt
+            has() { grep -qx -- "$1" lst.txt; }
+            if grep -q '/steam\.exe$' lst.txt; then echo "FATAL: $file ships steam.exe"; exit 1; fi
+            case "$file" in
+              *x86_64*)
+                ! grep -q 'winewayland' lst.txt || { echo "FATAL: x86_64 layer carries winewayland"; exit 1; }
+                ! grep -q 'lsteamclient' lst.txt || { echo "FATAL: x86_64 layer carries lsteamclient"; exit 1; }
+                echo "   x86_64: no winewayland, no lsteamclient (correct)" ;;
+              *arm64ec*)
+                for e in lib/wine/aarch64-unix/winewayland.so lib/wine/aarch64-windows/winewayland.drv lib/wine/i386-windows/winewayland.drv; do
+                  has "$e" || { echo "FATAL: $e missing"; exit 1; }
+                done
+                case "$vname" in
+                  10.*)
+                    ! grep -q 'lsteamclient' lst.txt || { echo "FATAL: Wine 10 layer carries lsteamclient"; exit 1; }
+                    echo "   Wine 10: winewayland 3/3, no lsteamclient (correct)" ;;
+                  *)
+                    for e in lib/wine/aarch64-windows/lsteamclient.dll lib/wine/i386-windows/lsteamclient.dll lib/wine/aarch64-unix/lsteamclient.so; do
+                      has "$e" || { echo "FATAL: $e missing"; exit 1; }
+                    done
+                    echo "   Wine 11: winewayland 3/3, lsteamclient 3/3" ;;
+                esac
+                echo "   $(grep -c 'libvulkan_freedreno_wayland' lst.txt) Wayland Turnip files" ;;
+            esac
+            echo "   $got_vn vc$got_vc, $(stat -c %s "dl/$file") bytes — ok"
+            mv "dl/$file" out/
+          done
+          n=$(ls out/*.wcp | wc -l); echo "== collected $n"; ls -l out
+          [ "$n" = 14 ] || { echo "FATAL: expected 14 files"; exit 1; }
+
+      - name: Attach and set the notes
+        run: |
+          set -euo pipefail
+          have=$(gh release view "$TAG" -R "$REPO" --json assets --jq '.assets[].name')
+          for f in out/*.wcp; do
+            n=$(basename "$f")
+            if echo "$have" | grep -qx "$n"; then echo "$n already attached, leaving it"; continue; fi
+            for attempt in 1 2 3 4 5; do
+              if gh release upload "$TAG" -R "$REPO" --clobber "$f"; then echo "   uploaded $n (attempt $attempt)"; break; fi
+              [ "$attempt" = 5 ] && { echo "FATAL: $n failed after 5 attempts"; exit 1; }
+              echo "   upload of $n failed, retrying in $((attempt * 20))s"; sleep $((attempt * 20))
+            done
+          done
+          gh release edit "$TAG" -R "$REPO" --notes-file body.md
+          gh release view "$TAG" -R "$REPO" --json isDraft,assets \
+            --jq '"draft=\(.isDraft)", "assets=\(.assets|length)", (.assets[] | "\(.name)  \(.size)")'
