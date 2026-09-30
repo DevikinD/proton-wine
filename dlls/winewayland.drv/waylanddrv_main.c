@@ -24,12 +24,21 @@
 
 #include "config.h"
 
+#include <dlfcn.h>
+#include <limits.h>
+#include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
 
 #include "ntstatus.h"
 #define WIN32_NO_STATUS
 
 #include "waylanddrv.h"
+
+#include "wine/debug.h"
+
+WINE_DEFAULT_DEBUG_CHANNEL(waylanddrv);
 
 char *process_name = NULL;
 
@@ -41,11 +50,13 @@ static const struct user_driver_funcs waylanddrv_funcs =
     .pKbdLayerDescriptor = WAYLAND_KbdLayerDescriptor,
     .pReleaseKbdTables = WAYLAND_ReleaseKbdTables,
     .pSetCursor = WAYLAND_SetCursor,
+    .pSetDesktopWindow = WAYLAND_SetDesktopWindow,
     .pSetWindowText = WAYLAND_SetWindowText,
     .pSysCommand = WAYLAND_SysCommand,
     .pUpdateDisplayDevices = WAYLAND_UpdateDisplayDevices,
     .pWindowMessage = WAYLAND_WindowMessage,
     .pWindowPosChanged = WAYLAND_WindowPosChanged,
+    .pClipClientSurfaces = WAYLAND_ClipClientSurfaces,
     .pWindowPosChanging = WAYLAND_WindowPosChanging,
     .pCreateWindowSurface = WAYLAND_CreateWindowSurface,
     .pVulkanInit = WAYLAND_VulkanInit,
@@ -80,6 +91,161 @@ static void wayland_init_process_name(void)
     }
 }
 
+/* Keep a Vulkan driver resident for the life of the process. The Vulkan loader unloads the
+ * driver when a program destroys its last instance, and a later call still reaching into it
+ * then jumps into unmapped code (DiRT Rally 2.0 probes a device, releases it, and spins on
+ * that fault). The library is the manifest's library_path, relative to the manifest's dir.
+ * Keeping the driver resident leaves its globals alive across a winevulkan unload, so
+ * winevulkan pins itself too on a Wayland desktop and the two stay in step
+ * (see dlls/winevulkan/loader.c). */
+static void pin_icd_library(const char *json)
+{
+    char lib[PATH_MAX], buf[4096], *p, *q;
+    const char *slash;
+    size_t n, dir;
+    FILE *f;
+
+    if (!(f = fopen(json, "r"))) return;
+    n = fread(buf, 1, sizeof(buf) - 1, f);
+    fclose(f);
+    buf[n] = 0;
+    if (!(p = strstr(buf, "\"library_path\"")) || !(p = strchr(p + 14, ':')) ||
+        !(p = strchr(p, '"')) || !(q = strchr(++p, '"')))
+    {
+        MESSAGE("winewayland: no library_path in %s, driver not pinned\n", json);
+        return;
+    }
+    *q = 0;
+    slash = p[0] == '/' ? NULL : strrchr(json, '/');
+    dir = slash ? slash - json + 1 : 0;
+    if (dir + strlen(p) >= sizeof(lib)) return;
+    memcpy(lib, json, dir);
+    strcpy(lib + dir, p);
+    if (!dlopen(lib, RTLD_NOW | RTLD_NODELETE))
+        MESSAGE("winewayland: could not pin %s: %s\n", lib, dlerror());
+}
+
+/* <wine>/lib/wine/aarch64-unix/winewayland.so -> <wine>, the installed Proton tree that this
+ * build's bundled drivers and data live under. */
+static BOOL bundled_root(char *wine, size_t size)
+{
+    Dl_info info;
+    char *p;
+    int i;
+
+    if (!dladdr((void *)bundled_root, &info) || !info.dli_fname) return FALSE;
+    if (strlen(info.dli_fname) >= size - 96) return FALSE;
+    strcpy(wine, info.dli_fname);
+    for (i = 0; i < 4; i++)
+    {
+        if (!(p = strrchr(wine, '/'))) return FALSE;
+        *p = 0;
+    }
+    return TRUE;
+}
+
+/* The bundled libxkbregistry / libxkbcommon are Termux builds whose compiled-in xkeyboard-config
+ * root is Termux's private directory, unreadable from the app, so parsing the default ruleset
+ * failed in every container and layouts could only be named "us" (wayland_keyboard.c). This
+ * build ships xkeyboard-config's data under share/X11/xkb; point the libraries at it unless the
+ * environment already chose a root. Must run before the compositor hands us a wl_keyboard. */
+static void use_bundled_xkb(void)
+{
+    static const char rules[] = "/rules/evdev.xml";
+    char wine[PATH_MAX], path[PATH_MAX];
+
+    if (getenv("XKB_CONFIG_ROOT")) return;
+    if (!bundled_root(wine, sizeof(wine))) return;
+    snprintf(path, sizeof(path), "%s/share/X11/xkb%s", wine, rules);
+    if (access(path, R_OK)) return;
+    path[strlen(path) - (sizeof(rules) - 1)] = 0;
+    setenv("XKB_CONFIG_ROOT", path, 1);
+    MESSAGE("winewayland: Xkb config root %s\n", path);
+}
+
+/* Containers on the Bannerlator compositor point VK_ICD_FILENAMES at a wrapper driver that
+ * can only present to X11, and their OpenGL is GLX-only. This build ships Wayland-capable
+ * Turnips and Mesa's EGL + Zink next to Wine, so use those when we're on that compositor.
+ *
+ * Which Vulkan driver the game renders on is the app's call, through the environment:
+ *   BANNER_WAYLAND_VK_ICD=<absolute path>   the ICD manifest of a driver the app manages (an
+ *                                           imported one); taken when it is readable.
+ *   BANNER_WAYLAND_VK_VARIANT=a7xx|a8xx|a8xx-perf|a8xx-gen8|a8xx-smxz|a8xx-white|a8xx-upstream
+ *                                           one of the bundled Turnip variants
+ *                                           (share/vulkan/icd.d/banner_wayland_turnip_<v>.json,
+ *                                           a8xx-perf -> _a8xx_perf, a8xx-gen8 -> _a8xx_gen8,
+ *                                           a8xx-smxz -> _a8xx_smxz, a8xx-white -> _a8xx_white,
+ *                                           a8xx-upstream -> _a8xx_upstream).
+ *   neither                                 the plain bundled Turnip (banner_wayland_turnip.json).
+ * A value that cannot be honoured is reported (ERR) and falls through to the next line. Every
+ * outcome is logged as "winewayland: Vulkan driver <manifest>", the app greps for that. */
+static void use_bundled_drivers(void)
+{
+    static const char icd_base[] = "/share/vulkan/icd.d/banner_wayland_turnip";
+    static const char egl[] = "/lib/libEGL.so.1";
+    char wine[PATH_MAX], path[PATH_MAX], icd[PATH_MAX];
+    const char *env;
+    BOOL app_selected = FALSE;
+
+    if (!bundled_root(wine, sizeof(wine))) return;
+
+    icd[0] = 0;
+    if ((env = getenv("BANNER_WAYLAND_VK_ICD")) && *env)
+    {
+        if (env[0] == '/' && strlen(env) < sizeof(icd) && !access(env, R_OK))
+        {
+            strcpy(icd, env);
+            app_selected = TRUE;
+        }
+        else ERR("winewayland: BANNER_WAYLAND_VK_ICD=%s is not a readable absolute path, ignoring it\n", env);
+    }
+    if (!icd[0] && (env = getenv("BANNER_WAYLAND_VK_VARIANT")) && *env)
+    {
+        const char *suffix = !strcmp(env, "a7xx") ? "_a7xx" :
+                             !strcmp(env, "a8xx") ? "_a8xx" :
+                             !strcmp(env, "a8xx-perf") ? "_a8xx_perf" :
+                             !strcmp(env, "a8xx-gen8") ? "_a8xx_gen8" :
+                             !strcmp(env, "a8xx-smxz") ? "_a8xx_smxz" :
+                             !strcmp(env, "a8xx-white") ? "_a8xx_white" :
+                             !strcmp(env, "a8xx-upstream") ? "_a8xx_upstream" : NULL;
+        if (suffix)
+        {
+            snprintf(path, sizeof(path), "%s%s%s.json", wine, icd_base, suffix);
+            if (!access(path, R_OK)) strcpy(icd, path);
+            else ERR("winewayland: bundled Vulkan driver variant %s is missing (%s), using the plain one\n", env, path);
+        }
+        else if (strcmp(env, "plain"))
+            ERR("winewayland: unknown BANNER_WAYLAND_VK_VARIANT=%s, using the plain driver\n", env);
+    }
+    if (!icd[0])
+    {
+        snprintf(path, sizeof(path), "%s%s.json", wine, icd_base);
+        if (!access(path, R_OK)) strcpy(icd, path);
+    }
+
+    if (icd[0])
+    {
+        setenv("VK_ICD_FILENAMES", icd, 1);
+        if (app_selected) ERR("winewayland: Vulkan driver %s (app-selected)\n", icd);
+        else MESSAGE("winewayland: Vulkan driver %s\n", icd);
+        pin_icd_library(icd);
+    }
+
+    /* OpenGL through EGL on Zink. On Wine 10 the driver's own opengl.c loads EGL (dlopen of
+     * SONAME_LIBEGL), so pointing Mesa at Zink is all that is needed for the bundled Mesa EGL to
+     * render on the Turnip above and present through its Vulkan WSI. There is no win32u EGL path
+     * or startup GL GPU probe on this Wine, so nothing else to switch. NOT LIBGL_ALWAYS_SOFTWARE:
+     * that makes Zink demand a CPU Vulkan device, of which there is none here.
+     * BANNER_WAYLAND_GL=0 turns it off. */
+    strcpy(path, wine);
+    strcat(path, egl);
+    if (!access(path, R_OK) && (!(env = getenv("BANNER_WAYLAND_GL")) || atoi(env)))
+    {
+        setenv("MESA_LOADER_DRIVER_OVERRIDE", "zink", 1);
+        MESSAGE("winewayland: OpenGL through %s (Zink)\n", path);
+    }
+}
+
 static NTSTATUS waylanddrv_unix_init(void *arg)
 {
     /* Set the user driver functions now so that they are available during
@@ -87,8 +253,11 @@ static NTSTATUS waylanddrv_unix_init(void *arg)
     __wine_set_user_driver(&waylanddrv_funcs, WINE_GDI_DRIVER_VERSION);
 
     wayland_init_process_name();
+    use_bundled_xkb();
 
     if (!wayland_process_init()) goto err;
+
+    if (process_wayland.banner_desktop_v1) use_bundled_drivers();
 
     return 0;
 

@@ -366,6 +366,7 @@ do
       "dlls/user32/clipboard.c|WINE_FROM_ANDROID_CLIPBOARD|Android clipboard bridge (user32 half, Wine-10 only)"
       "server/token.c|machine-id|per-prefix machine-id fallback (Wine-10 only)"
       "dlls/ntdll/unix/loader.c|load_unixlib_by_name|FEX unixlib load-by-name loader"
+      "dlls/winewayland.drv/wayland.c|banner_desktop_v1|Wayland virtual desktop (banner_desktop_v1)"
     )
     for row in "${MARKERS[@]}"; do
       m_file="${row%%|*}"; rest="${row#*|}"; m_token="${rest%%|*}"; m_what="${rest#*|}"
@@ -489,6 +490,11 @@ do
         echo "  FATAL Wayland Turnip '$v' is missing from the layer" >&2; wl_fail=1
       fi
     done
+    if [ -f "$OUTPUT_DIR/lib/wine/aarch64-unix/winewayland.so" ] && grep -qa banner_desktop_v1 "$OUTPUT_DIR/lib/wine/aarch64-unix/winewayland.so"; then
+      echo "  ok    winewayland.so speaks banner_desktop_v1"
+    else
+      echo "  FATAL winewayland.so does not carry banner_desktop_v1 (the virtual desktop protocol)" >&2; wl_fail=1
+    fi
     if [ "$wl_fail" != "0" ]; then
       echo "FATAL: the Wayland driver is incomplete in this layer; refusing to package it." >&2
       exit 1
