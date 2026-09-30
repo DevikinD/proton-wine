@@ -367,6 +367,8 @@ do
       "server/token.c|machine-id|per-prefix machine-id fallback (Wine-10 only)"
       "dlls/ntdll/unix/loader.c|load_unixlib_by_name|FEX unixlib load-by-name loader"
       "dlls/winewayland.drv/wayland.c|banner_desktop_v1|Wayland virtual desktop (banner_desktop_v1)"
+      "dlls/winewayland.drv/wayland_touch.c|touch_lparam|Wayland touch (wl_touch -> WM_POINTER*, normalized lparam)"
+      "dlls/winewayland.drv/wayland_edid.c|wayland_edid_build|Wayland HDR10 monitor EDID"
     )
     for row in "${MARKERS[@]}"; do
       m_file="${row%%|*}"; rest="${row#*|}"; m_token="${rest%%|*}"; m_what="${rest#*|}"
