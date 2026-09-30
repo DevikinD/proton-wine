@@ -2626,6 +2626,20 @@ static NTSTATUS map_file_into_view( struct file_view *view, int fd, size_t start
             break;
         case EACCES:
         case EPERM:  /* noexec filesystem, fall back to read() */
+            /* A noexec mount (Android's FUSE /storage/emulated/0, a FAT SD card) refuses any
+             * PROT_EXEC file mapping, and a 32-bit process with DEP off asks for PROT_EXEC on
+             * every readable mapping (force_exec_prot), so a plain read-only data section of a
+             * game installed there failed outright. Wine 11 maps file views without PROT_EXEC
+             * and only adds protections afterwards, so there it simply stays non-executable:
+             * do the same here, keeping the real (shared, coherent) file mapping. Private
+             * mappings keep the read() fallback below, whose anonymous copy can be executable. */
+            if ((flags & MAP_SHARED) && (prot & PROT_EXEC) &&
+                mmap( (char *)view->base + start, size, prot & ~PROT_EXEC, flags, fd, offset ) != MAP_FAILED)
+            {
+                WARN( "noexec filesystem, mapped %p-%p without PROT_EXEC\n",
+                      (char *)view->base + start, (char *)view->base + start + size );
+                goto done;
+            }
             if (flags & MAP_SHARED)
             {
                 if (prot & PROT_EXEC) ERR( "failed to set PROT_EXEC on file map, noexec filesystem?\n" );
