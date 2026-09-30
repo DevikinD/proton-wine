@@ -2,6 +2,25 @@
 
 Newest entry at the top.
 
+## 2026-09-30: v9 RELEASED — all ten layers (`build-bionic-layers-20260930-v9`, Latest + catalog default)
+
+- **Every Wine 11 layer** (11.0-1, 11.0-2, GE 11.0-3/-5/-6/-7/-7.1, CachyOS): winewayland **touch** (`wl_touch` →
+  `WM_POINTER*`, lparam normalised to 0..65535 over the virtual screen — first version sent pixels; CachyOS keeps its
+  upstream touch), **rsaenh** fixes (bl4ckh4ck5 HMAC `b4fc579` as is; CPVerifySignature key pin rewritten: ref taken
+  under the handle-table lock, `release_object_ref` never frees the slot), **opt-in userspace ntsync** (`WINENTSYNC=1`;
+  Joshua Tam / GameNative `ntsync-android` @ `7ce6435`, one `ntsync_userspace.patch`; unset = exact old esync path),
+  **dormant lsteamclient** (Valve 11.0-2 SDK 165 + our bionic fixes + GN `owned_dlcs`; redirect only with
+  `WINE_LSTEAMCLIENT=1`; arm64ec only, no `steam.exe`). versionCode 9.
+- **Proton 10.0-4 / GE 10.0-34:** v8 Wayland + HDR10 EDID backported to Wine 10 (GDI driver 102 → 103,
+  `pClipClientSurfaces` hook), touch, rsaenh (HMAC adapted to BCrypt handles), desktop no longer locks the pointer in
+  virtual-desktop mode, noexec shared-section retry without `PROT_EXEC` (Insane 2). No ntsync / lsteamclient.
+- Release published server-side (`publish/v9` 8709ca5694a: 14 wcps pulled from their CI runs, sha256-gated against the
+  device-tested files); winlator-contents copy + `contents.json` `c086862` (14 rows); parents fast-forwarded, v8 tips at
+  `refs/backup/20260930/<parent>-v8`.
+- Device-proven (Pocket FIT): 11.0-2 DiRT Showdown esync + ntsync live, CS:S SteamLite/Goldberg + Raw Brawlhalla with the
+  bridge dormant; P10-4 Wayland + X11 and GE 10.0-34 Wayland (cursor, Insane 2); other layers launched by the user.
+  Touch inside a Windows game not yet tested.
+
 ## 2026-09-17: x86_64 leg restored on proton_11.0-2 — the v8 set is complete (`d00527c9054`)
 
 V7 shipped three x86_64 layer rows. Two of them (`GE-Proton-11.0-7-x86_64`, `GE-Proton-11.0-7.1-x86_64`)
