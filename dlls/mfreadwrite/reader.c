@@ -54,6 +54,38 @@ static BOOL mfr_dbg(void)
 }
 #define MFRDBG(...) do { if (mfr_dbg()) ERR("MFRDBG " __VA_ARGS__); } while (0)
 
+static void mfr_dump_type(const char *what, DWORD index, IMFMediaType *type)
+{
+    GUID major = GUID_NULL, subtype = GUID_NULL;
+    UINT64 size = 0, rate = 0;
+    UINT32 stride = 0, sample_size = 0;
+
+    if (!mfr_dbg() || !type) return;
+    IMFMediaType_GetGUID(type, &MF_MT_MAJOR_TYPE, &major);
+    IMFMediaType_GetGUID(type, &MF_MT_SUBTYPE, &subtype);
+    IMFMediaType_GetUINT64(type, &MF_MT_FRAME_SIZE, &size);
+    IMFMediaType_GetUINT64(type, &MF_MT_FRAME_RATE, &rate);
+    IMFMediaType_GetUINT32(type, &MF_MT_DEFAULT_STRIDE, &stride);
+    IMFMediaType_GetUINT32(type, &MF_MT_SAMPLE_SIZE, &sample_size);
+    ERR("MFRDBG %s idx %#lx major %s sub %s size %ux%u rate %u/%u stride %d ssize %u\n", what, index,
+            debugstr_guid(&major), debugstr_guid(&subtype), (UINT32)(size >> 32), (UINT32)size,
+            (UINT32)(rate >> 32), (UINT32)rate, (INT32)stride, sample_size);
+}
+
+static void mfr_dump_sample(const char *what, DWORD index, IMFSample *sample)
+{
+    LONGLONG time = -1, duration = -1;
+    DWORD count = 0, length = 0;
+
+    if (!mfr_dbg() || !sample) return;
+    IMFSample_GetSampleTime(sample, &time);
+    IMFSample_GetSampleDuration(sample, &duration);
+    IMFSample_GetBufferCount(sample, &count);
+    IMFSample_GetTotalLength(sample, &length);
+    ERR("MFRDBG %s s %lu time %s dur %s bufs %lu len %lu\n", what, index, wine_dbgstr_longlong(time),
+            wine_dbgstr_longlong(duration), count, length);
+}
+
 DEFINE_MEDIATYPE_GUID(MFVideoFormat_ABGR32, D3DFMT_A8B8G8R8);
 
 struct stream_response
@@ -1894,6 +1926,8 @@ static HRESULT WINAPI src_reader_GetCurrentMediaType(IMFSourceReaderEx *iface, D
 
     LeaveCriticalSection(&reader->cs);
 
+    mfr_dump_type("getcur", index, *type);
+
     return hr;
 }
 
@@ -2293,9 +2327,11 @@ static HRESULT WINAPI src_reader_SetCurrentMediaType(IMFSourceReaderEx *iface, D
 
     EnterCriticalSection(&reader->cs);
 
+    mfr_dump_type("setcur", index, output_type);
     hr = source_reader_set_compatible_media_type(reader, index, output_type);
     if (hr == S_FALSE)
         hr = source_reader_create_decoder_for_stream(reader, index, output_type);
+    MFRDBG("setcur idx %#lx hr %#lx\n", index, hr);
 
     LeaveCriticalSection(&reader->cs);
 
@@ -2312,6 +2348,7 @@ static HRESULT WINAPI src_reader_SetCurrentPosition(IMFSourceReaderEx *iface, RE
     HRESULT hr;
 
     TRACE("%p, %s, %p.\n", iface, debugstr_guid(format), position);
+    MFRDBG("setpos r %p vt %u val %s\n", reader, position->vt, wine_dbgstr_longlong(position->hVal.QuadPart));
 
     if (FAILED(hr = IMFMediaSource_GetCharacteristics(reader->source, &flags)))
         return hr;
@@ -2427,6 +2464,7 @@ static HRESULT source_reader_read_sample(struct source_reader *reader, DWORD ind
     TRACE("Stream %lu, got sample %p, flags %#lx.\n", *actual_index, *sample, *stream_flags);
     MFRDBG("got r %p s %lu ts %s fl %#lx smp %d hr %#lx\n", reader, *actual_index, wine_dbgstr_longlong(*timestamp),
             *stream_flags, !!*sample, hr);
+    mfr_dump_sample("gotsmp", *actual_index, *sample);
 
     return hr;
 }
@@ -2528,6 +2566,7 @@ static HRESULT WINAPI src_reader_Flush(IMFSourceReaderEx *iface, DWORD index)
     const char *sgi;
 
     TRACE("%p, %#lx.\n", iface, index);
+    MFRDBG("flush r %p idx %#lx\n", reader, index);
 
     sgi = getenv("SteamGameId");
     if (sgi && strcmp(sgi, "1293160") == 0)
@@ -2558,6 +2597,7 @@ static HRESULT WINAPI src_reader_GetServiceForStream(IMFSourceReaderEx *iface, D
     HRESULT hr = S_OK;
 
     TRACE("%p, %#lx, %s, %s, %p\n", iface, index, debugstr_guid(service), debugstr_guid(riid), object);
+    MFRDBG("getsvc idx %#lx %s %s\n", index, debugstr_guid(service), debugstr_guid(riid));
 
     EnterCriticalSection(&reader->cs);
 
@@ -2618,6 +2658,7 @@ static HRESULT WINAPI src_reader_GetPresentationAttribute(IMFSourceReaderEx *ifa
     HRESULT hr;
 
     TRACE("%p, %#lx, %s, %p.\n", iface, index, debugstr_guid(guid), value);
+    MFRDBG("getattr idx %#lx %s\n", index, debugstr_guid(guid));
 
     switch (index)
     {
