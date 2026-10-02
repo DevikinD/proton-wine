@@ -41,6 +41,19 @@
 
 WINE_DEFAULT_DEBUG_CHANNEL(mfplat);
 
+/* FMV diagnostics: WINE_MFR_DEBUG=1 prints Source Reader stream decisions at ERR level. */
+static BOOL mfr_dbg(void)
+{
+    static LONG state = -1;
+    if (state == -1)
+    {
+        char buf[8];
+        state = GetEnvironmentVariableA("WINE_MFR_DEBUG", buf, sizeof(buf)) && buf[0] == '1';
+    }
+    return state;
+}
+#define MFRDBG(...) do { if (mfr_dbg()) ERR("MFRDBG " __VA_ARGS__); } while (0)
+
 DEFINE_MEDIATYPE_GUID(MFVideoFormat_ABGR32, D3DFMT_A8B8G8R8);
 
 struct stream_response
@@ -447,6 +460,8 @@ static HRESULT source_reader_queue_response(struct source_reader *reader, struct
 
     list_add_tail(&reader->responses, &response->entry);
     stream->responses++;
+    MFRDBG("queue r %p s %u ts %s fl %#lx st %#lx smp %d resp %u req %u\n", reader, stream->index,
+            wine_dbgstr_longlong(timestamp), stream_flags, status, !!sample, stream->responses, stream->requests);
 
     source_reader_response_ready(reader, response);
 
@@ -1036,6 +1051,12 @@ static HRESULT source_reader_media_sample_handler(struct source_reader *reader, 
         {
             /* FIXME: propagate processing errors? */
             reader->streams[i].flags &= ~STREAM_FLAG_SAMPLE_REQUESTED;
+            if (mfr_dbg())
+            {
+                LONGLONG t = -1;
+                IMFSample_GetSampleTime(sample, &t);
+                MFRDBG("src r %p s %u ts %s req %u\n", reader, i, wine_dbgstr_longlong(t), reader->streams[i].requests);
+            }
             hr = source_reader_process_sample(reader, &reader->streams[i], sample);
             break;
         }
@@ -1387,6 +1408,17 @@ static HRESULT source_reader_get_next_selected_stream(struct source_reader *read
         }
     }
 
+    if (mfr_dbg())
+    {
+        for (i = 0; i < reader->stream_count; ++i)
+        {
+            selected = SUCCEEDED(source_reader_get_stream_selection(reader, i, &selected)) && selected;
+            MFRDBG("any r %p s %u sel %d state %d ts %s resp %u req %u\n", reader, i, selected, reader->streams[i].state,
+                    wine_dbgstr_longlong(reader->streams[i].last_sample_ts), reader->streams[i].responses, reader->streams[i].requests);
+        }
+        MFRDBG("any r %p pick %lu min %s\n", reader, *stream_index, wine_dbgstr_longlong(min_ts));
+    }
+
     if (first_selected != ~0u && min_ts == MAXLONGLONG)
     {
         if (reader->flag_eos_for_all_streams)
@@ -1539,6 +1571,8 @@ static HRESULT WINAPI source_reader_async_commands_callback_Invoke(IMFAsyncCallb
 
             LeaveCriticalSection(&reader->cs);
 
+            MFRDBG("aread r %p idx %#x -> s %lu report %d ts %s fl %#lx smp %d\n", reader, command->u.read.stream_index,
+                    stream_index, report_sample, wine_dbgstr_longlong(timestamp), stream_flags, !!sample);
             if (report_sample)
                 IMFSourceReaderCallback_OnReadSample(reader->async_callback, status, stream_index, stream_flags,
                         timestamp, sample);
@@ -1565,6 +1599,14 @@ static HRESULT WINAPI source_reader_async_commands_callback_Invoke(IMFAsyncCallb
             EnterCriticalSection(&reader->cs);
             stream = &reader->streams[command->u.sample.stream_index];
             response = media_stream_pop_response(reader, stream);
+            /* Record the delivered timestamp here as well: ANY_STREAM picks the least advanced
+             * stream by last_sample_ts, and a stream whose samples are always delivered on this
+             * path would otherwise look stuck at its first timestamp and win every pick. */
+            if (response && response->sample)
+                stream->last_sample_ts = response->timestamp;
+            if (response)
+                MFRDBG("ready r %p s %u ts %s fl %#lx smp %d\n", reader, stream->index,
+                        wine_dbgstr_longlong(response->timestamp), response->stream_flags, !!response->sample);
             LeaveCriticalSection(&reader->cs);
 
             if (response)
@@ -1708,6 +1750,7 @@ static HRESULT WINAPI src_reader_SetStreamSelection(IMFSourceReaderEx *iface, DW
     unsigned int i;
 
     TRACE("%p, %#lx, %d.\n", iface, index, selection);
+    MFRDBG("select r %p idx %#lx sel %d\n", reader, index, selection);
 
     selection = !!selection;
 
@@ -2382,6 +2425,8 @@ static HRESULT source_reader_read_sample(struct source_reader *reader, DWORD ind
     }
 
     TRACE("Stream %lu, got sample %p, flags %#lx.\n", *actual_index, *sample, *stream_flags);
+    MFRDBG("got r %p s %lu ts %s fl %#lx smp %d hr %#lx\n", reader, *actual_index, wine_dbgstr_longlong(*timestamp),
+            *stream_flags, !!*sample, hr);
 
     return hr;
 }
@@ -2419,6 +2464,7 @@ static HRESULT WINAPI src_reader_ReadSample(IMFSourceReaderEx *iface, DWORD inde
     HRESULT hr;
 
     TRACE("%p, %#lx, %#lx, %p, %p, %p, %p\n", iface, index, flags, actual_index, stream_flags, timestamp, sample);
+    MFRDBG("read r %p idx %#lx fl %#lx async %d\n", reader, index, flags, !!reader->async_callback);
 
     EnterCriticalSection(&reader->cs);
 
