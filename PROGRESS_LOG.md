@@ -1164,3 +1164,34 @@ Do not carry the CI commit; each parent stamps its own versionCode.
 Optional follow-up (not done): shell32 still has no `DefaultIcon` for the Control
 Panel CLSID, so the classic menu and Explorer's My Computer view still draw it as a
 folder. The fix would be a `folders.c` fallback to `IDI_SHELL_CONTROL_PANEL`.
+
+## 2026-10-02 — v10: Media Foundation cutscene fixes (Ninja Gaiden Sigma)
+
+Ninja Gaiden Sigma's opening has two movies read through the Media Foundation Source
+Reader (sync reads, explicit stream indices, NV12 + PCM output). The first
+(`ninja_vi.wmv`, WMV3) played; the second (`ninja_gaiden.wmv`, WMV2 1080p, two WMA
+audio streams) played black with sound.
+
+Cause: avdec_wmv2 gives every output frame a buffer duration of 2:09.59. Since video
+samples take the decoder's output PTS (NelloKudo `924c786e74`), they took that duration
+too. The game waits for time + duration before reading the next video sample, so it
+read one frame and then only audio.
+
+Fix: on video output, accept the decoder duration only when it is at most four frame
+intervals (1 s without a frame rate); otherwise use the output frame interval, or the
+preserved input duration. Device-proven: both movies play to the title screen (movie 2:
+2942 of ~2944 frames delivered, natural EOS on video and audio).
+
+Carried in v10:
+- NelloKudo's Media Foundation series from the Cachy branches (13 commits: topology
+  restore, mfsrcsnk absolute seek, decoded audio alignment, WMA decoder types/output
+  sizing, native compressed reader streams + retry with decoded streams, WMA
+  bits-per-sample, winedmo extension-less URLs, ANY_STREAM ready-stream preference,
+  video PTS from decoder output).
+- GE's media-converter env gate (`41b4951fd5`): converters register only when their
+  `PROTON_*` env var is 1.
+- mfreadwrite: record the delivered timestamp on async SAMPLE_READY responses.
+- winegstreamer: ignore an implausible decoder duration on video output samples.
+
+Tested on the v9-fmv staging branch (test layer versionCode 90). Not regression-tested
+against other games' cutscenes yet.
