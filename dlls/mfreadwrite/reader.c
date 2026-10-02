@@ -1355,9 +1355,9 @@ static BOOL source_reader_get_read_result(struct source_reader *reader, struct m
 
 static HRESULT source_reader_get_next_selected_stream(struct source_reader *reader, DWORD *stream_index)
 {
-    unsigned int i, first_selected = ~0u, ready_index = ~0u;
+    unsigned int i, first_selected = ~0u;
     BOOL selected, stream_drained;
-    LONGLONG min_ts = MAXLONGLONG, min_ts_ready = MAXLONGLONG;
+    LONGLONG min_ts = MAXLONGLONG;
 
     for (i = 0; i < reader->stream_count; ++i)
     {
@@ -1371,26 +1371,23 @@ static HRESULT source_reader_get_next_selected_stream(struct source_reader *read
 
             if (!stream_drained)
             {
-                /* use least advanced stream if no responses are ready */
-                if (reader->streams[i].last_sample_ts < min_ts)
+                /* Always read the least advanced stream, so no stream can fall behind for good. On a
+                 * timestamp tie prefer one that already has a response queued, so a slow decoder is
+                 * not waited on while an equally advanced stream is ready. Preferring any ready
+                 * stream outright starved video whenever audio kept a response queued (WMV2 movies
+                 * with 1024-byte WMA blocks: one video frame, then black for the whole movie). */
+                if (reader->streams[i].last_sample_ts < min_ts
+                        || (min_ts != MAXLONGLONG && reader->streams[i].last_sample_ts == min_ts
+                            && reader->streams[i].responses && !reader->streams[*stream_index].responses))
                 {
                     min_ts = reader->streams[i].last_sample_ts;
                     *stream_index = i;
-                }
-                /* between streams that have queued responses, use the one with the lowest delivered timestamp */
-                if (reader->streams[i].responses && reader->streams[i].last_sample_ts < min_ts_ready)
-                {
-                    min_ts_ready = reader->streams[i].last_sample_ts;
-                    ready_index = i;
                 }
             }
         }
     }
 
-    /* prefer a stream with queued responses, else use the least advanced stream */
-    if (ready_index != ~0u)
-        *stream_index = ready_index;
-    else if (first_selected != ~0u && min_ts == MAXLONGLONG)
+    if (first_selected != ~0u && min_ts == MAXLONGLONG)
     {
         if (reader->flag_eos_for_all_streams)
             *stream_index = reader->next_stream_eos_index++ % reader->stream_count;
