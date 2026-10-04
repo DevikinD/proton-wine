@@ -1764,12 +1764,17 @@ static HRESULT stream_descriptor_create(UINT32 id, IMFMediaType *media_type, IMF
 static NTSTATUS CDECL media_source_seek_cb( struct winedmo_stream *stream, UINT64 *pos )
 {
     struct media_source *source = CONTAINING_RECORD(stream, struct media_source, winedmo_stream);
+    UINT64 current = *pos;
     TRACE("stream %p, pos %p\n", stream, pos);
 
-    if (FAILED(IMFByteStream_Seek(source->stream, msoBegin, *pos, 0, pos)))
+    if (FAILED(IMFByteStream_SetCurrentPosition(source->stream, current))
+            && FAILED(IMFByteStream_Seek(source->stream, msoBegin, current, 0, &current)))
         return STATUS_UNSUCCESSFUL;
 
-    source->position = *pos;
+    if (FAILED(IMFByteStream_GetCurrentPosition(source->stream, &current)))
+        current = *pos;
+
+    *pos = source->position = current;
     return STATUS_SUCCESS;
 }
 
@@ -2076,12 +2081,20 @@ static BOOL use_gst_byte_stream_handler(void)
     BOOL result;
     DWORD size = sizeof(result);
 
+    const char *use_dmo = getenv( "WINE_USE_DMO" );
+
+    /* Bionic layers: winegstreamer stays the default byte-stream handler, winedmo (FFmpeg) is
+     * opt-in, so a layer whose winedmo works does not change what every existing container,
+     * app build and shortcut has been playing cutscenes with. Opt in with WINE_USE_DMO=1 or
+     * DisableGstByteStreamHandler=1; a DWORD 0 pins winegstreamer. */
+    if (use_dmo && *use_dmo == '1') return FALSE;
+
     /* @@ Wine registry key: HKCU\Software\Wine\MediaFoundation */
     if (!RegGetValueW( HKEY_CURRENT_USER, L"Software\\Wine\\MediaFoundation", L"DisableGstByteStreamHandler",
                        RRF_RT_REG_DWORD, NULL, &result, &size ))
         return !result;
 
-    return FALSE;
+    return TRUE;
 }
 
 static HRESULT WINAPI asf_byte_stream_plugin_factory_CreateInstance(IClassFactory *iface,
